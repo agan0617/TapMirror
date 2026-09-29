@@ -1,6 +1,7 @@
 package io.github.agan0617.tapmirror;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -10,6 +11,7 @@ import android.text.InputType;
 import android.util.Patterns;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebResourceRequest;
@@ -20,18 +22,25 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Switch;
+import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.regex.Matcher;
 
 /**
  * 上面一條網址列＋「左右對調」開關，下面是 MirrorWebView。
  * 開關開著時，點畫面右邊等於點左邊、點左邊等於點右邊（拖曳、捲動、長按不受影響）。
+ * ★ 把目前這頁存起來、≡ 列出已存的網頁切換（長按刪除）。
  * 最後看的網址與開關狀態會記住，下次打開照舊；從 Chrome 用「分享」把網址丟過來也可以。
  */
 public class MainActivity extends Activity {
     private static final String PREFS = "tapmirror";
     private static final String KEY_URL = "url";
     private static final String KEY_MIRROR = "mirror";
+    private static final String KEY_BOOKMARKS = "bookmarks";
 
     private MirrorWebView web;
     private EditText urlBox;
@@ -66,11 +75,9 @@ public class MainActivity extends Activity {
         });
         bar.addView(urlBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button goBtn = new Button(this);
-        goBtn.setText("前往");
-        goBtn.setTextSize(13);
-        goBtn.setOnClickListener(v -> go());
-        bar.addView(goBtn, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        bar.addView(smallButton("前往", d, v -> go()));
+        bar.addView(smallButton("★", d, v -> saveBookmark()));
+        bar.addView(smallButton("≡", d, v -> showBookmarks()));
 
         Switch sw = new Switch(this);
         sw.setText("對調");
@@ -149,6 +156,101 @@ public class MainActivity extends Activity {
             if (m.find()) return m.group();
         }
         return null;
+    }
+
+    private Button smallButton(String text, float d, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTextSize(15);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setPadding((int) (12 * d), 0, (int) (12 * d), 0);
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMarginStart((int) (4 * d));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    // ---- 已存網頁：SharedPreferences 裡一個 JSON 陣列 [{title,url}, ...] ----
+
+    private JSONArray bookmarks() {
+        try { return new JSONArray(prefs.getString(KEY_BOOKMARKS, "[]")); }
+        catch (JSONException e) { return new JSONArray(); }
+    }
+
+    private void saveBookmarks(JSONArray arr) {
+        prefs.edit().putString(KEY_BOOKMARKS, arr.toString()).apply();
+    }
+
+    /** ★：把目前這頁存起來，名稱預設用網頁標題，可以改 */
+    private void saveBookmark() {
+        String url = web.getUrl();
+        if (url == null || url.isEmpty() || url.startsWith("about:")) {
+            Toast.makeText(this, "先打開一個網頁", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        JSONArray arr = bookmarks();
+        for (int i = 0; i < arr.length(); i++) {
+            if (url.equals(arr.optJSONObject(i).optString("url"))) {
+                Toast.makeText(this, "這頁已經存過：" + arr.optJSONObject(i).optString("title"), Toast.LENGTH_SHORT).show();
+                return;
+            }
+        }
+        String title = web.getTitle();
+        if (title == null || title.trim().isEmpty()) title = url;
+        EditText nameBox = new EditText(this);
+        nameBox.setText(title);
+        nameBox.setSingleLine(true);
+        nameBox.setSelectAllOnFocus(true);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        nameBox.setPadding(pad, nameBox.getPaddingTop(), pad, nameBox.getPaddingBottom());
+        new AlertDialog.Builder(this)
+                .setTitle("儲存這頁")
+                .setMessage(url)
+                .setView(nameBox)
+                .setPositiveButton("儲存", (dlg, w) -> {
+                    String name = nameBox.getText().toString().trim();
+                    if (name.isEmpty()) name = url;
+                    try {
+                        arr.put(new JSONObject().put("title", name).put("url", url));
+                    } catch (JSONException ignored) { }
+                    saveBookmarks(arr);
+                    Toast.makeText(this, "已儲存：" + name, Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** ≡：列出已存的網頁，點一下切換，長按刪除 */
+    private void showBookmarks() {
+        JSONArray arr = bookmarks();
+        if (arr.length() == 0) {
+            Toast.makeText(this, "還沒存任何網頁，按 ★ 儲存目前這頁", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] titles = new String[arr.length()];
+        for (int i = 0; i < arr.length(); i++) titles[i] = arr.optJSONObject(i).optString("title");
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("已存的網頁（長按刪除）")
+                .setItems(titles, (d, i) -> load(arr.optJSONObject(i).optString("url")))
+                .setNegativeButton("關閉", null)
+                .create();
+        dlg.setOnShowListener(x -> dlg.getListView().setOnItemLongClickListener((parent, v, i, id) -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("刪除「" + titles[i] + "」？")
+                    .setMessage(arr.optJSONObject(i).optString("url"))
+                    .setPositiveButton("刪除", (d2, w) -> {
+                        arr.remove(i);
+                        saveBookmarks(arr);
+                        dlg.dismiss();
+                        Toast.makeText(this, "已刪除：" + titles[i], Toast.LENGTH_SHORT).show();
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+            return true;
+        }));
+        dlg.show();
     }
 
     private void go() {
