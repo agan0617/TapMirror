@@ -3,6 +3,7 @@
 Android 的 WebView 小瀏覽器，把**點畫面左邊／右邊**這兩個操作對調。
 
 <img src="docs/screenshot.jpg" width="300" alt="screenshot">
+
 給那種「點右邊翻下一頁、點左邊翻上一頁」的網頁用——習慣反過來的人，開這支 App 看就好。
 
 ## 功能
