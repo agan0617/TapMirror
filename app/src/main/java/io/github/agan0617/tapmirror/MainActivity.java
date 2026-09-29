@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
 import android.util.Patterns;
@@ -33,7 +34,7 @@ import java.util.regex.Matcher;
 /**
  * 上面一條網址列＋「左右對調」開關，下面是 MirrorWebView。
  * 開關開著時，點畫面右邊等於點左邊、點左邊等於點右邊（拖曳、捲動、長按不受影響）。
- * ★ 把目前這頁存起來、≡ 列出已存的網頁切換（長按刪除）。
+ * ★ 把目前這頁存起來、≡ 列出已存的網頁切換（長按刪除）；開了已存的網頁後在同站翻頁，那筆網址會跟著更新。
  * 最後看的網址與開關狀態會記住，下次打開照舊；從 Chrome 用「分享」把網址丟過來也可以。
  */
 public class MainActivity extends Activity {
@@ -116,6 +117,14 @@ public class MainActivity extends Activity {
                 urlBox.setText(url);
                 prefs.edit().putString(KEY_URL, url).apply();
             }
+
+            /** 每次網址變動都會來（含網頁用 history.pushState 換網址、不重新載入的那種翻頁） */
+            @Override
+            public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
+                urlBox.setText(url);
+                prefs.edit().putString(KEY_URL, url).apply();
+                trackNavigation(url);
+            }
         });
 
         LinearLayout root = new LinearLayout(this);
@@ -174,6 +183,40 @@ public class MainActivity extends Activity {
 
     // ---- 已存網頁：SharedPreferences 裡一個 JSON 陣列 [{title,url}, ...] ----
 
+    /**
+     * 目前正在看的是哪一筆已存網頁（bookmarks 的 index，-1＝沒有）。
+     * 開了已存網頁之後，在同一個網站裡翻頁就把那筆的網址更新成目前這頁，下次從 ≡ 打開會接著看；
+     * 跳到別的網站、自己輸入新網址就停止追蹤。
+     */
+    private int activeBookmark = -1;
+
+    private void trackNavigation(String url) {
+        if (url == null || url.startsWith("about:") || url.startsWith("data:")) return;
+        JSONArray arr = bookmarks();
+        if (activeBookmark >= 0 && activeBookmark < arr.length()) {
+            JSONObject b = arr.optJSONObject(activeBookmark);
+            String old = b.optString("url");
+            if (url.equals(old)) return;
+            if (sameHost(old, url)) {
+                try { b.put("url", url); } catch (JSONException ignored) { }
+                saveBookmarks(arr);
+                return;
+            }
+            activeBookmark = -1;   // 跑到別的網站去了
+        }
+        // 沒在追蹤：目前這頁若剛好就是某筆已存網址，接上去
+        for (int i = 0; i < arr.length(); i++) {
+            if (url.equals(arr.optJSONObject(i).optString("url"))) { activeBookmark = i; return; }
+        }
+    }
+
+    private static boolean sameHost(String a, String b) {
+        try {
+            String ha = Uri.parse(a).getHost(), hb = Uri.parse(b).getHost();
+            return ha != null && ha.equalsIgnoreCase(hb);
+        } catch (Exception e) { return false; }
+    }
+
     private JSONArray bookmarks() {
         try { return new JSONArray(prefs.getString(KEY_BOOKMARKS, "[]")); }
         catch (JSONException e) { return new JSONArray(); }
@@ -193,7 +236,8 @@ public class MainActivity extends Activity {
         JSONArray arr = bookmarks();
         for (int i = 0; i < arr.length(); i++) {
             if (url.equals(arr.optJSONObject(i).optString("url"))) {
-                Toast.makeText(this, "這頁已經存過：" + arr.optJSONObject(i).optString("title"), Toast.LENGTH_SHORT).show();
+                activeBookmark = i;
+                Toast.makeText(this, "這頁已經存過：" + arr.optJSONObject(i).optString("title") + "（翻頁會自動更新）", Toast.LENGTH_SHORT).show();
                 return;
             }
         }
@@ -216,6 +260,7 @@ public class MainActivity extends Activity {
                         arr.put(new JSONObject().put("title", name).put("url", url));
                     } catch (JSONException ignored) { }
                     saveBookmarks(arr);
+                    activeBookmark = arr.length() - 1;
                     Toast.makeText(this, "已儲存：" + name, Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("取消", null)
@@ -233,7 +278,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < arr.length(); i++) titles[i] = arr.optJSONObject(i).optString("title");
         AlertDialog dlg = new AlertDialog.Builder(this)
                 .setTitle("已存的網頁（長按刪除）")
-                .setItems(titles, (d, i) -> load(arr.optJSONObject(i).optString("url")))
+                .setItems(titles, (d, i) -> { activeBookmark = i; load(arr.optJSONObject(i).optString("url")); })
                 .setNegativeButton("關閉", null)
                 .create();
         dlg.setOnShowListener(x -> dlg.getListView().setOnItemLongClickListener((parent, v, i, id) -> {
@@ -243,6 +288,7 @@ public class MainActivity extends Activity {
                     .setPositiveButton("刪除", (d2, w) -> {
                         arr.remove(i);
                         saveBookmarks(arr);
+                        activeBookmark = -1;
                         dlg.dismiss();
                         Toast.makeText(this, "已刪除：" + titles[i], Toast.LENGTH_SHORT).show();
                     })
@@ -257,6 +303,7 @@ public class MainActivity extends Activity {
         String t = urlBox.getText().toString().trim();
         if (t.isEmpty()) return;
         if (!t.contains("://")) t = "https://" + t;
+        activeBookmark = -1;
         load(t);
         urlBox.clearFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
